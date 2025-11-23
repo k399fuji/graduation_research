@@ -1,0 +1,2 @@
+PINN進捗メモ
+・波動PINNのICType：sineとtwopeaksはまだc++非対応
