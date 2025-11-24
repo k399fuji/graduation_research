@@ -23,6 +23,7 @@ from editor.heat2d_tab import Heat2DTab
 from editor.home_page import HomePage
 
 
+
 def apply_dark_theme(app: QApplication) -> None:
     app.setStyle("Fusion")
 

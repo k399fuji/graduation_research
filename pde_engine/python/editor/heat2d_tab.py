@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QHBoxLayout,
     QLabel, QDoubleSpinBox, QSpinBox, QComboBox,

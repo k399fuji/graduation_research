@@ -1,8 +1,7 @@
 # editor/viewport_1d.py
 from __future__ import annotations
-
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -14,10 +13,14 @@ from PySide6.QtWidgets import (
 )
 
 from backend import log_utils
-
+from abc import ABC, abstractmethod
+from editor.animation_engine import AnimationEngine
+from editor.viewmodels import ViewportState 
 
 LOSS_LINEWIDTH = 0.5
 
+if TYPE_CHECKING:
+    from .viewport_1d import ViewportWidget 
 
 class MatplotlibCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None, width=5, height=3, dpi=100):
@@ -42,6 +45,58 @@ class MatplotlibCanvas(FigureCanvasQTAgg):
         ax.title.set_color("white")
 
 
+class ViewMode(ABC):
+    def __init__(self, viewport: "ViewportWidget", name: str):
+        self.viewport = viewport
+        self.name = name
+
+    @abstractmethod
+    def render(self, run_id: str) -> None:
+        """指定 run_id を描画する"""
+        raise NotImplementedError
+
+
+class SolutionMode(ViewMode):
+    def __init__(self, viewport: "ViewportWidget"):
+        super().__init__(viewport, "Solution")
+
+    def render(self, run_id: str) -> None:
+        vp = self.viewport
+        ax = vp.canvas.axes
+        ev = vp._load_eval(run_id)
+        vp._plot_solution(ax, run_id, ev)
+
+
+class ErrorMode(ViewMode):
+    def __init__(self, viewport: "ViewportWidget"):
+        super().__init__(viewport, "Error")
+
+    def render(self, run_id: str) -> None:
+        vp = self.viewport
+        ax = vp.canvas.axes
+        ev = vp._load_eval(run_id)
+        vp._plot_error(ax, run_id, ev)
+
+
+class LossMode(ViewMode):
+    def __init__(self, viewport: "ViewportWidget"):
+        super().__init__(viewport, "Loss")
+
+    def render(self, run_id: str) -> None:
+        vp = self.viewport
+        ax = vp.canvas.axes
+        vp._plot_loss(ax, run_id)
+
+
+class AnimationMode(ViewMode):
+    def __init__(self, viewport: "ViewportWidget"):
+        super().__init__(viewport, "Animation")
+
+    def render(self, run_id: str) -> None:
+        vp = self.viewport
+        ax = vp.canvas.axes
+        vp._plot_animation_or_fallback(ax, run_id)
+
 class ViewportWidget(QWidget):
     """
     中央ビュー。1D の run のみを表示する。
@@ -55,18 +110,18 @@ class ViewportWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self._current_run_id: Optional[str] = None
-        self._current_anim_step: int = 0
-        self._anim_state: Optional[Dict[str, Any]] = None
+        self.state = ViewportState()
 
         layout = QVBoxLayout(self)
 
         # --- 上部: モード切替 ---
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(QLabel("View:"))
+
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Solution", "Error", "Loss", "Animation"])
+        self._init_modes()
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
+
         mode_layout.addWidget(self.mode_combo)
         mode_layout.addStretch()
         layout.addLayout(mode_layout)
@@ -89,6 +144,13 @@ class ViewportWidget(QWidget):
         self.info_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.info_label)
 
+        # アニメーション専用エンジン
+        self.animation = AnimationEngine(self)
+
+        # 表示モードを登録
+        self._init_modes()
+        self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
+
     # ========= 共通ヘルパ =========
 
     def _load_eval(self, run_id: str) -> Optional[dict]:
@@ -101,79 +163,34 @@ class ViewportWidget(QWidget):
         except Exception:
             return None
 
-    # ========= Animation 用セットアップ =========
+    def _init_modes(self):
+        """
+        利用可能な表示モードを登録し、コンボボックスに反映する。
+        """
 
-    def _setup_animation_state(self, run_id: str, ax):
-        import torch
+        self._modes: dict[str, ViewMode] = {}
 
-        config_path = log_utils.path_config(run_id)
-        model_path = log_utils.path_model(run_id)
+        self.mode_combo.clear()
+        # Viewport 自身を渡してモードを生成
+        for cls in (SolutionMode, ErrorMode, LossMode, AnimationMode):
+            mode = cls(self)
+            self._modes[mode.name] = mode
+            self.mode_combo.addItem(mode.name)
 
-        if not config_path.exists() or not model_path.exists():
-            ax.text(0.5, 0.5, "No config/model for this run",
-                    ha="center", va="center")
-            self.info_label.setText(f"{run_id}: no model checkpoint")
-            self._anim_state = None
-            return
-
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-
-        summary = log_utils.load_summary(run_id)
-        backend = None
-        if summary is not None:
-            backend = summary.get("run", {}).get("backend", None)
-
-        if backend == "pinn_wave1d":
-            import pinn_wave1d as pinn_module
-        else:
-            import pinn_heat1d as pinn_module
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = pinn_module.build_model(config, device)
-
-        checkpoint = torch.load(model_path, map_location=device)
-        state_dict = checkpoint.get("state_dict", checkpoint)
-        model.load_state_dict(state_dict)
-        model.eval()
-
-        L = float(config.get("L", 1.0))
-        T_final = float(config.get("T_final", 1.0))
-        Nx_eval = int(config.get("Nx_eval", 201))
-
-        x = torch.linspace(0.0, L, Nx_eval, device=device).view(-1, 1)
-        N_frames = 100
-
-        self._anim_state = {
-            "run_id": run_id,
-            "backend": backend,
-            "config": config,
-            "device": device,
-            "model": model,
-            "x": x,
-            "T_final": T_final,
-            "N_frames": N_frames,
-        }
-
-        self.time_slider.blockSignals(True)
-        self.time_slider.setMinimum(0)
-        self.time_slider.setMaximum(N_frames)
-        self.time_slider.setValue(N_frames)
-        self.time_slider.blockSignals(False)
-
-        self._update_animation_frame(N_frames, ax)
+        self.state.current_mode = "Solution"
 
     # ========= 外部 API =========
 
     def show_result(self, run_id: str):
-        self._current_run_id = run_id
+        self.state.current_run_id = run_id
         self._update_plot()
 
     # ========= スロット =========
 
     @Slot()
     def on_mode_changed(self):
-        if self._current_run_id is not None:
+        self.state.current_mode = self.mode_combo.currentText()
+        if self.state.current_run_id is not None:
             self._update_plot()
 
     # ========= モード別描画 =========
@@ -270,21 +287,25 @@ class ViewportWidget(QWidget):
         self.info_label.setText(f"Result: {run_id}  |  mode: Loss")
 
     def _plot_animation_or_fallback(self, ax, run_id: str):
-        self._setup_animation_state(run_id, ax)
+        self.animation.setup(run_id)
 
     # ========= メイン描画更新 =========
 
     def _update_plot(self):
+        """現在の run_id とモードに基づいてグラフを更新する。"""
+
         ax = self.canvas.axes
         ax.clear()
 
-        run_id = self._current_run_id
+        run_id = self.state.current_run_id
         if not run_id:
             ax.text(0.5, 0.5, "No run selected", ha="center", va="center")
             self.info_label.setText("No run yet")
+            self.canvas.apply_dark_style()
             self.canvas.draw()
             return
 
+        # 次元チェック（2D 以上はここでは表示しない）
         summary = log_utils.load_summary(run_id)
         dim = 1
         if summary is not None:
@@ -301,124 +322,25 @@ class ViewportWidget(QWidget):
                 ha="center",
                 va="center",
             )
-            self.info_label.setText(f"{dim}D run: {run_id}  (view in 2D Heat tab)")
-            self.canvas.draw()
-            return
-
-        mode = self.mode_combo.currentText()
-        self.time_slider.setVisible(mode == "Animation")
-
-        ev = None
-        if mode in ("Solution", "Error"):
-            ev = self._load_eval(run_id)
-
-        if mode == "Solution":
-            if ev is None or any(k not in ev for k in ("x_pinn", "u_pinn", "x_cpp", "u_cpp")):
-                ax.text(
-                    0.5, 0.5,
-                    "This run has no 1D eval data.\n(Heat2D etc. are not shown here.)",
-                    ha="center", va="center"
-                )
-                self.info_label.setText(f"Result: {run_id}  |  mode: {mode} (unsupported)")
-                self.canvas.draw()
-                return
-            self._plot_solution(ax, run_id, ev)
-
-        elif mode == "Error":
-            self._plot_error(ax, run_id, ev)
-
-        elif mode == "Loss":
-            self._plot_loss(ax, run_id)
-
-        elif mode == "Animation":
-            self._plot_animation_or_fallback(ax, run_id)
-            self.canvas.apply_dark_style()
-            self.canvas.draw()
-            return
-
-        else:
-            ax.text(0.5, 0.5, f"Unknown mode: {mode}",
-                    ha="center", va="center")
-            self.info_label.setText(f"Unknown mode: {mode}")
-
-        self.canvas.apply_dark_style()
-        self.canvas.draw()
-
-    def _update_animation_frame(self, step: int, ax=None):
-        if ax is None:
-            ax = self.canvas.axes
-        ax.clear()
-
-        run_id = self._current_run_id
-        if not run_id:
-            ax.text(0.5, 0.5, "No run selected", ha="center", va="center")
-            self.info_label.setText("No run yet")
-            self.canvas.apply_dark_style()
-            self.canvas.draw()
-            return
-
-        state = self._anim_state
-
-        # --- 1) PINN モデルを使ったアニメーション ---
-        if state is not None:
-            import torch
-
-            N_frames = int(state.get("N_frames", 100))
-            T_final = float(state.get("T_final", 1.0))
-            step_clamped = max(0, min(int(step), N_frames))
-            t = T_final * (step_clamped / max(1, N_frames))
-
-            device = state["device"]
-            model = state["model"]
-            x = state["x"]
-
-            with torch.no_grad():
-                t_tensor = torch.full_like(x, fill_value=t, device=device)
-                u_t = model(x, t_tensor).cpu().numpy().flatten()
-            x_np = x.cpu().numpy().flatten()
-
-            ax.plot(x_np, u_t, label="PINN", linewidth=2)
-            ax.set_xlabel("x")
-            ax.set_ylabel("u(x, t)")
-            ax.set_title(f"Animation (run_id={run_id}, t={t:.3f})")
-            ax.legend()
-
-            self._current_anim_step = int(step_clamped)
             self.info_label.setText(
-                f"Animation: {run_id}  |  step {step_clamped}/{N_frames}  t={t:.3f}"
+                f"{dim}D run: {run_id} (view in 2D Heat tab)"
             )
             self.canvas.apply_dark_style()
             self.canvas.draw()
             return
 
-        # --- 2) フォールバック: eval.json の T_final ---
-        ev = self._load_eval(run_id)
-        if ev is None:
-            ax.text(0.5, 0.5, "No eval.json for this run",
+        # ---- モードに応じて Strategy に委譲 ----
+        mode_name = self.state.current_mode
+        self.time_slider.setVisible(mode_name == "Animation")
+
+        mode = self._modes.get(mode_name)
+        if mode is None:
+            ax.text(0.5, 0.5, f"Unknown mode: {mode_name}",
                     ha="center", va="center")
-            self.info_label.setText(f"Result: {run_id} (no eval)")
-            self.canvas.apply_dark_style()
-            self.canvas.draw()
-            return
+            self.info_label.setText(f"Unknown mode: {mode_name}")
+        else:
+            mode.render(run_id)
 
-        x_pinn = np.asarray(ev.get("x_pinn"), dtype=float)
-        u_pinn = np.asarray(ev.get("u_pinn"), dtype=float)
-        x_cpp = np.asarray(ev.get("x_cpp"), dtype=float)
-        u_cpp = np.asarray(ev.get("u_cpp"), dtype=float)
-
-        ax.plot(x_pinn, u_pinn, label="PINN (T_final)", linewidth=2)
-        if len(x_cpp) == len(u_cpp):
-            ax.plot(x_cpp, u_cpp, "--", label="C++ reference (T_final)")
-
-        ax.set_xlabel("x")
-        ax.set_ylabel("u(x, t)")
-        ax.set_title(f"Animation (run_id={run_id}, static T_final)")
-        ax.legend()
-
-        self._current_anim_step = int(step)
-        self.info_label.setText(
-            f"Animation (fallback): {run_id}  |  step={step} (static T_final)"
-        )
         self.canvas.apply_dark_style()
         self.canvas.draw()
 
@@ -426,5 +348,4 @@ class ViewportWidget(QWidget):
     def on_time_slider_changed(self, value: int):
         if self.mode_combo.currentText() != "Animation":
             return
-        ax = self.canvas.axes
-        self._update_animation_frame(value, ax)
+        self.animation.render_frame(value)

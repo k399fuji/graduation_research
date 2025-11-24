@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import Qt, Slot, Signal
+from PySide6.QtCore import Slot, Signal
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel,
     QListWidget, QPushButton, QTextEdit,
