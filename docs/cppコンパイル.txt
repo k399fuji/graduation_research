@@ -1,0 +1,3 @@
+cd cpp
+g++ -std=c++17 -02 heat.d.cpp -o heat1d
+.\heat1d.exe

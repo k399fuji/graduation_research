@@ -22,6 +22,17 @@ ext_modules = [
         include_dirs=["cpp"],
         cxx_std=17,
     ),
+
+    # 2D 熱方程式モジュール
+    Pybind11Extension(
+        "heat2d_cpp",
+        [
+            "cpp/heat2d_module.cpp",
+            "cpp/heat2d_solver.cpp",
+        ],
+        include_dirs=["cpp"],
+        cxx_std=17,
+    )
 ]
 
 setup(
