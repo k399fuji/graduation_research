@@ -4,11 +4,22 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from PySide6.QtCore import Slot
+
+from PySide6.QtCore import Slot, Signal, Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QFormLayout, QHBoxLayout,
-    QLabel, QDoubleSpinBox, QSpinBox, QComboBox,
-    QLineEdit, QPushButton, QTextEdit, QApplication,
+    QWidget,
+    QVBoxLayout,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QDoubleSpinBox,
+    QSpinBox,
+    QComboBox,
+    QLineEdit,
+    QPushButton,
+    QTextEdit,
+    QApplication,
+    QSplitter,
 )
 
 from backend.heat2d_backend import Heat2DConfig, Heat2DResult, run_heat2d
@@ -16,6 +27,11 @@ from editor.viewmodels import Heat2DState
 
 DARK_BG = "#2b2b2b"
 FG_COLOR = "white"
+
+
+# ============================================
+# 2D 描画用キャンバス
+# ============================================
 
 class Heat2DCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None, width=5, height=4, dpi=100):
@@ -74,10 +90,45 @@ class Heat2DCanvas(FigureCanvasQTAgg):
         self.draw_idle()
 
 
-class Heat2DTab(QWidget):
+# ============================================
+# Viewer（右側：可視化専用）
+# ============================================
+
+class Heat2DViewer(QWidget):
     """
-    Heat2D の C++ 参照ソルバ（heat2d）を経由して 2D ヒートマップを描画するタブ。
+    Heat2D の結果を表示する Viewer。
     """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        layout = QVBoxLayout(self)
+        self.canvas = Heat2DCanvas(self, width=5, height=4, dpi=100)
+        layout.addWidget(self.canvas, 1)
+
+        self.info_label = QLabel("Heat2D Viewer: no result yet")
+        self.info_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.info_label)
+
+    def show_result(self, result: Heat2DResult) -> None:
+        """
+        Heat2DResult を受け取ってヒートマップを描画。
+        """
+        self.canvas.plot_solution(result.x, result.y, result.u)
+        self.info_label.setText(f"Heat2D Viewer | run_id={result.run_id}")
+
+
+# ============================================
+# Control Panel（左側：パラメータ＋Run＋ログ）
+# ============================================
+
+class Heat2DControlPanel(QWidget):
+    """
+    Heat2D シミュレーションのパラメータ入力・実行とログ表示を担当するパネル。
+    """
+
+    simulationFinished = Signal(object)  # Heat2DResult を流す
+    simulationFailed = Signal(str)       # エラーメッセージなどを流す（必要なら使用）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -86,6 +137,7 @@ class Heat2DTab(QWidget):
 
         main_layout = QVBoxLayout(self)
 
+        # ---- フォーム ----
         form_layout = QFormLayout()
 
         self.spin_Lx = QDoubleSpinBox()
@@ -154,6 +206,7 @@ class Heat2DTab(QWidget):
 
         main_layout.addLayout(form_layout)
 
+        # ---- ボタン行 ----
         button_layout = QHBoxLayout()
         self.run_button = QPushButton("Run 2D Heat Simulation")
         self.run_button.clicked.connect(self.on_run_clicked)
@@ -162,29 +215,27 @@ class Heat2DTab(QWidget):
         self.run_id_label = QLabel("run_id: (not run yet)")
         button_layout.addWidget(self.run_id_label)
 
-        self.info_label = QLabel("Ready.")
+        self.info_label = QLabel(self.state.info_message)
         button_layout.addWidget(self.info_label)
 
         button_layout.addStretch()
         main_layout.addLayout(button_layout)
 
+        # ---- ログエリア ----
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         main_layout.addWidget(QLabel("Log:"))
         main_layout.addWidget(self.log_text)
 
-        self.canvas = Heat2DCanvas(self, width=5, height=4, dpi=100)
-        main_layout.addWidget(self.canvas, 1)
+    # ---------- ユーティリティ ----------
 
-    def append_log(self, text: str):
+    def append_log(self, text: str) -> None:
         self.log_text.append(text)
 
-    def get_config(self) -> dict:
+    def _collect_config_dict(self) -> dict:
         """
-        UI から設定値を収集し、Heat2DState と backend 用 config dict の両方に使える
-        標準化された辞書を返す。
+        UI から設定値を収集し、backend にそのまま渡せる dict を返す。
         """
-
         cfg = {
             "Nx_cpp": int(self.spin_Nx.value()),
             "Ny_cpp": int(self.spin_Ny.value()),
@@ -199,21 +250,19 @@ class Heat2DTab(QWidget):
             "tag": self.edit_tag.text().strip() or "heat2d",
             "solver_type": "heat2d",
         }
-
-        # ★ ViewModel にも反映させる
-        self.state.config = cfg
-
         return cfg
 
-    @Slot()
-    def on_run_clicked(self):
-        # Config を取得＆ state 更新
-        cfg_dict = self.get_config()
+    # ---------- Run ボタン ----------
 
+    @Slot()
+    def on_run_clicked(self) -> None:
+        # Config を取得
+        cfg_dict = self._collect_config_dict()
+
+        # 状態リセット
         self.state.is_running = True
         self.state.last_error = None
         self.state.info_message = "Running 2D Heat simulation..."
-
         self.info_label.setText(self.state.info_message)
         self.run_button.setEnabled(False)
         QApplication.processEvents()
@@ -237,7 +286,7 @@ class Heat2DTab(QWidget):
         try:
             result: Heat2DResult = run_heat2d(cfg)
         except Exception as e:
-            # ★ 失敗時
+            # 失敗時
             self.state.is_running = False
             self.state.last_error = repr(e)
             self.state.info_message = "Error during Heat2D simulation."
@@ -245,18 +294,17 @@ class Heat2DTab(QWidget):
             self.append_log(f"Error: {e!r}")
             self.info_label.setText(self.state.info_message)
             self.run_button.setEnabled(True)
+
+            # 必要なら外部にも通知
+            self.simulationFailed.emit(repr(e))
             return
 
-        # ★ 成功時：state 更新
+        # 成功時
         self.state.is_running = False
         self.state.last_run_id = result.run_id
         self.state.info_message = "Done."
 
-        # 描画
-        self.canvas.plot_solution(result.x, result.y, result.u)
-
-        # ラベル・ログ更新
-        self.run_id_label.setText(f"run_id: {self.state.last_run_id}")
+        self.run_id_label.setText(f"run_id: {result.run_id}")
         self.info_label.setText(self.state.info_message)
 
         if result.config_json_path is not None:
@@ -267,3 +315,48 @@ class Heat2DTab(QWidget):
             self.append_log(f"Summary JSON: {result.summary_json_path}")
 
         self.run_button.setEnabled(True)
+
+        # Viewer 側へ結果を通知
+        self.simulationFinished.emit(result)
+
+
+# ============================================
+# Workspace タブ本体（左右分割）
+# ============================================
+
+class Heat2DTab(QWidget):
+    """
+    Heat2D 用ワークスペース。
+    左に ControlPanel、右に Viewer を QSplitter で配置する。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        main_layout = QVBoxLayout(self)
+
+        splitter = QSplitter(Qt.Horizontal, self)
+
+        self.control_panel = Heat2DControlPanel(splitter)
+        self.viewer = Heat2DViewer(splitter)
+
+        splitter.addWidget(self.control_panel)
+        splitter.addWidget(self.viewer)
+
+        # 左パネルはやや狭く、右 Viewer を広く取る
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+
+        main_layout.addWidget(splitter)
+
+        # シミュレーション完了時に Viewer に渡す
+        self.control_panel.simulationFinished.connect(self.on_simulation_finished)
+
+    @Slot(object)
+    def on_simulation_finished(self, result_obj: object) -> None:
+        # Signal は object なので Heat2DResult にキャストして使う
+        if isinstance(result_obj, Heat2DResult):
+            self.viewer.show_result(result_obj)
+        else:
+            # 想定外の型の場合は何もしない（もしくはログに出してもOK）
+            pass

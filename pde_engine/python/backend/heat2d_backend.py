@@ -9,7 +9,7 @@ import json
 
 import numpy as np
 
-from backend import log_utils
+from backend import sim_log_utils as log_utils
 from reference_solvers import make_reference_solver
 
 LOG_DIR = log_utils.LOG_DIR
