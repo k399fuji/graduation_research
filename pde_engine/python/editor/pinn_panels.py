@@ -5,10 +5,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QTabWidget,
     QDockWidget,
+    QMainWindow,
 )
 
-
-from editor.plugin_core import EditorPlugin
+from editor.plugin_core import EditorPlugin, register_builtin_plugin
 
 # ==============================
 # タブ付き PINN プラグイン
@@ -18,7 +18,7 @@ class PINNTabbedPlugin(EditorPlugin):
     plugin_id = "pinn_tabbed"
     display_name = "PINN"
 
-    def create_dock(self, main_window) -> QDockWidget:
+    def create_dock(self, main_window: QMainWindow) -> QDockWidget:
         from editor.heat_panel import HeatPINNPanel
         from editor.wave_panel import WavePINNPanel
 
@@ -46,3 +46,6 @@ class PINNTabbedPlugin(EditorPlugin):
         main_window.pinn_dock = dock
         dock.hide()
         return dock
+
+# ★ ここを追加：プラグイン Factory に登録
+register_builtin_plugin(PINNTabbedPlugin)

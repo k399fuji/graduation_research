@@ -129,10 +129,8 @@ class BasePINNPage(QWidget, Generic[TConfig]):
         cfg = self.get_config()
 
         # epochs を安全に取得（無ければ 0）
-        try:
-            epochs = int(getattr(cfg, "epochs"))
-        except Exception:
-            epochs = 0
+        epochs = int(getattr(cfg, "epochs", 0) or 0)
+
 
         # --- ViewModel 初期化 ---
         self.state.is_running = True
@@ -219,6 +217,7 @@ class BasePINNPage(QWidget, Generic[TConfig]):
             ("log_csv_path", "Log CSV"),
             ("config_json_path", "Config JSON"),
             ("eval_json_path", "Eval JSON"),
+            ("summary_json_path", "Summary JSON"),
         ]:
             path = getattr(result, attr, None)
             if path is not None:

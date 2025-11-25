@@ -1,4 +1,3 @@
-# editor/logs_panel.py
 from __future__ import annotations
 
 import json
@@ -6,13 +5,12 @@ import json
 from PySide6.QtCore import Slot, Signal
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel,
-    QListWidget, QPushButton, QTextEdit,
+    QListWidget, QPushButton, QTextEdit, QDockWidget,
 )
-from PySide6.QtWidgets import QDockWidget  # プラグイン用
 
 from backend import log_utils
-from editor.plugin_core import EditorPlugin
-from editor.viewport_1d import MatplotlibCanvas
+from editor.plugin_core import EditorPlugin, register_builtin_plugin
+from editor.mpl_canvas import MatplotlibCanvas
 
 
 class LogsPage(QWidget):
@@ -76,7 +74,7 @@ class LogsPage(QWidget):
         if run_id == "(no runs)":
             return
 
-        # Config / Summary
+        # ----- Config / Summary -----
         summary = log_utils.load_summary(run_id)
         if summary is not None:
             self.config_text.setPlainText(
@@ -91,9 +89,15 @@ class LogsPage(QWidget):
                     json.dumps(cfg, indent=2, ensure_ascii=False)
                 )
 
-        # Eval / metrics
+        # 次元情報（1D / 2D）
+        dim = 1
+        if summary is not None:
+            dim = int(summary.get("problem", {}).get("dim", 1))
+
+        # ----- Eval / metrics -----
         ev = log_utils.load_eval(run_id)
         if ev is None:
+            # eval.json が無い場合は summary の metrics を参照
             if summary is not None:
                 metrics = summary.get("results", {}).get("metrics", {})
                 l2 = metrics.get("L2_error", None)
@@ -105,54 +109,75 @@ class LogsPage(QWidget):
             else:
                 self.eval_label.setText("No eval.json")
         else:
-            l2 = ev.get("L2_error", None)
-            linf = ev.get("Linf_error", None)
-            if l2 is not None and linf is not None:
-                self.eval_label.setText(f"L2 = {l2:.3e},  L∞ = {linf:.3e}")
+            # eval.json が存在する場合
+            if dim == 2:
+                # 2D の場合は中身を直接可視化しない（u が 2D 配列なので）
+                self.eval_label.setText(
+                    "(2D dataset)\nCheck summary.json for full info"
+                )
             else:
-                self.eval_label.setText(json.dumps(ev, ensure_ascii=False))
+                # 1D の場合は L2 / Linf があれば表示、なければ JSON をそのまま表示
+                l2 = ev.get("L2_error", None)
+                linf = ev.get("Linf_error", None)
+                if l2 is not None and linf is not None:
+                    self.eval_label.setText(f"L2 = {l2:.3e},  L∞ = {linf:.3e}")
+                else:
+                    self.eval_label.setText(json.dumps(ev, ensure_ascii=False))
 
-        # Loss 曲線
-        rows = log_utils.load_loss_csv(run_id)
+        # ----- Loss 曲線 -----
+        rows = []
+        if dim == 1:
+            rows = log_utils.load_loss_csv(run_id)
+
         ax = self.canvas.axes
         ax.clear()
 
-        if not rows:
-            ax.text(0.5, 0.5, "No CSV log", ha="center", va="center")
+        if dim != 1:
+            # 2D run 用のメッセージのみ表示（描画はしない）
+            ax.text(
+                0.5,
+                0.5,
+                "Loss curves not available for 2D runs",
+                ha="center",
+                va="center",
+            )
         else:
-            epochs = [int(r["epoch"]) for r in rows]
+            if not rows:
+                ax.text(0.5, 0.5, "No CSV log", ha="center", va="center")
+            else:
+                epochs = [int(r["epoch"]) for r in rows]
 
-            def get_series(col_name: str, fallback: str | None = None):
-                if col_name in rows[0]:
-                    return [float(r[col_name]) for r in rows]
-                if fallback and fallback in rows[0]:
-                    return [float(r[fallback]) for r in rows]
-                return None
+                def get_series(col_name: str, fallback: str | None = None):
+                    if col_name in rows[0]:
+                        return [float(r[col_name]) for r in rows]
+                    if fallback and fallback in rows[0]:
+                        return [float(r[fallback]) for r in rows]
+                    return None
 
-            loss_total = get_series("loss_total", "loss")
-            loss_pde = get_series("loss_pde")
-            loss_ic = get_series("loss_ic")
-            loss_bc = get_series("loss_bc")
+                loss_total = get_series("loss_total", "loss")
+                loss_pde = get_series("loss_pde")
+                loss_ic = get_series("loss_ic")
+                loss_bc = get_series("loss_bc")
 
-            line_width = getattr(log_utils, "LINE_WIDTH", 1.5)
+                line_width = getattr(log_utils, "LINE_WIDTH", 1.5)
 
-            if loss_total is not None:
-                ax.plot(epochs, loss_total, label="loss_total",
-                        linewidth=line_width)
-            if loss_pde is not None:
-                ax.plot(epochs, loss_pde, label="loss_pde",
-                        linewidth=line_width)
-            if loss_ic is not None:
-                ax.plot(epochs, loss_ic, label="loss_ic",
-                        linewidth=line_width)
-            if loss_bc is not None:
-                ax.plot(epochs, loss_bc, label="loss_bc",
-                        linewidth=line_width)
+                if loss_total is not None:
+                    ax.plot(epochs, loss_total, label="loss_total",
+                            linewidth=line_width)
+                if loss_pde is not None:
+                    ax.plot(epochs, loss_pde, label="loss_pde",
+                            linewidth=line_width)
+                if loss_ic is not None:
+                    ax.plot(epochs, loss_ic, label="loss_ic",
+                            linewidth=line_width)
+                if loss_bc is not None:
+                    ax.plot(epochs, loss_bc, label="loss_bc",
+                            linewidth=line_width)
 
-            ax.set_xlabel("epoch")
-            ax.set_ylabel("loss")
-            ax.set_yscale("log")
-            ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.0))
+                ax.set_xlabel("epoch")
+                ax.set_ylabel("loss")
+                ax.set_yscale("log")
+                ax.legend(loc="upper right", bbox_to_anchor=(1.0, 1.0))
 
         self.canvas.fig.subplots_adjust(bottom=0.18)
         self.canvas.apply_dark_style()
@@ -176,7 +201,9 @@ class LogsPlugin(EditorPlugin):
         dock.setWidget(widget)
         dock.setObjectName(self.plugin_id)
         dock.setAllowedAreas(
-            Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea | Qt.BottomDockWidgetArea
+            Qt.LeftDockWidgetArea
+            | Qt.RightDockWidgetArea
+            | Qt.BottomDockWidgetArea
         )
         main_window.addDockWidget(Qt.RightDockWidgetArea, dock)
         dock.hide()
@@ -185,3 +212,5 @@ class LogsPlugin(EditorPlugin):
             main_window.view_menu.addAction(dock.toggleViewAction())
 
         return dock
+    
+register_builtin_plugin(LogsPlugin)

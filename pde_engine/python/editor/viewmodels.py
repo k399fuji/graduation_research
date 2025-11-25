@@ -5,25 +5,36 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+# ===== 1D Viewport 用 =====
+
 @dataclass
 class ViewportState:
-    """1D ビュー用の状態"""
+    """1D 中央ビューの状態"""
     current_run_id: Optional[str] = None
     current_mode: str = "Solution"
-    anim_step: int = 0
+    info_message: str = "No run yet"
+    current_anim_step: int = 0
 
+
+# ===== PINN Training 用 =====
 
 @dataclass
 class TrainingState:
-    """
-    PINN 学習パネル用の ViewModel。
-    UI とは切り離して「学習状態」だけを保持する。
-    """
-    is_running: bool = False          # 学習スレッドが動いているか
-    total_epochs: int = 0            # 予定 epoch 数
-    current_epoch: int = 0           # 今どこまで進んだか
-    last_loss: float | None = None   # 直近の loss
-    last_run_id: Optional[str] = None  # 最後に成功した run_id
+    """Heat/Wave PINN 共通の訓練状態"""
+    is_running: bool = False
+    current_epoch: int = 0
+    total_epochs: int = 0
+    last_loss: Optional[float] = None
+    last_run_id: Optional[str] = None
+    message: str = ""
 
 
-__all__ = ["ViewportState", "TrainingState"]
+# ===== Heat2D 用 =====
+
+@dataclass
+class Heat2DState:
+    """2D Heat タブの状態"""
+    is_running: bool = False
+    last_run_id: Optional[str] = None
+    last_error: Optional[str] = None
+    info_message: str = "Ready."

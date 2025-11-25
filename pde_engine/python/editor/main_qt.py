@@ -15,13 +15,13 @@ PYTHON_DIR = os.path.dirname(CURRENT_DIR)
 if PYTHON_DIR not in sys.path:
     sys.path.append(PYTHON_DIR)
 
-from editor.plugin_core import PluginManager
+from editor.plugin_core import PluginManager, get_builtin_plugins
 from editor.viewport_1d import ViewportWidget
-from editor.pinn_panels import PINNTabbedPlugin
-from editor.logs_panel import LogsPlugin
 from editor.heat2d_tab import Heat2DTab
 from editor.home_page import HomePage
 
+import editor.pinn_panels #プラグイン登録用：参照されてないけど消したらダメ
+import editor.logs_panel 
 
 
 def apply_dark_theme(app: QApplication) -> None:
@@ -77,13 +77,10 @@ class MainWindow(QMainWindow):
 
         # プラグイン
         self.plugin_manager = PluginManager(self)
-        self._register_builtin_plugins()
+        self.plugin_manager.register_many(get_builtin_plugins())
+        self.pinn_dock = self.plugin_manager.get_dock("pinn_tabbed")
 
         self.resize(1200, 800)
-
-    def _register_builtin_plugins(self):
-        self.plugin_manager.register_plugin(PINNTabbedPlugin)
-        self.plugin_manager.register_plugin(LogsPlugin)
 
     @Slot(str)
     def on_pinn_run_finished(self, run_id: str):
@@ -96,6 +93,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def open_pinn_workspace(self):
         self.tabs.setCurrentWidget(self.viewport)
+
         if self.pinn_dock is not None:
             self.pinn_dock.show()
             self.pinn_dock.raise_()

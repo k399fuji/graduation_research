@@ -32,16 +32,19 @@ class HomePage(QWidget):
             "- 2D Heat Simulation: 2次元熱方程式の数値シミュレーション"
         )
         desc.setAlignment(Qt.AlignCenter)
+        desc.setWordWrap(True)
         layout.addWidget(desc)
 
         layout.addSpacing(20)
 
         btn_layout = QVBoxLayout()
         self.btn_open_pinn = QPushButton("Open PINN Editor")
+        self.btn_open_pinn.setObjectName("btnOpenPinn")
         self.btn_open_pinn.clicked.connect(self.openPinnRequested)
         btn_layout.addWidget(self.btn_open_pinn)
 
         self.btn_open_heat2d = QPushButton("Open 2D Heat Simulation")
+        self.btn_open_heat2d.setObjectName("btnOpenHeat2D")
         self.btn_open_heat2d.clicked.connect(self.openHeat2DRequested)
         btn_layout.addWidget(self.btn_open_heat2d)
 

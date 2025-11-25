@@ -125,6 +125,9 @@ def _write_run_summary(
     training_block = {
         "solver": {
             "type": "reference_2d",
+            "Nx_cpp": int(config_dict.get("Nx_cpp", 0)),
+            "Ny_cpp": int(config_dict.get("Ny_cpp", 0)),
+            "dt_cpp": float(config_dict.get("dt_cpp", 0.0)),
         },
         "logging": {
             "config_json_path": str(log_config),

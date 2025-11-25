@@ -12,11 +12,10 @@ from PySide6.QtWidgets import (
 )
 
 from backend.heat2d_backend import Heat2DConfig, Heat2DResult, run_heat2d
-try:
-    import heat2d_cpp
-except ImportError:
-    heat2d_cpp = None
+from editor.viewmodels import Heat2DState
 
+DARK_BG = "#2b2b2b"
+FG_COLOR = "white"
 
 class Heat2DCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None, width=5, height=4, dpi=100):
@@ -30,21 +29,21 @@ class Heat2DCanvas(FigureCanvasQTAgg):
         self.apply_dark_style()
 
     def apply_dark_style(self):
-        self.fig.patch.set_facecolor("#2b2b2b")
-        self.ax.set_facecolor("#2b2b2b")
+        self.fig.patch.set_facecolor(DARK_BG)
+        self.ax.set_facecolor(DARK_BG)
 
         for spine in self.ax.spines.values():
-            spine.set_color("white")
-        self.ax.tick_params(axis="both", colors="white")
-        self.ax.xaxis.label.set_color("white")
-        self.ax.yaxis.label.set_color("white")
-        self.ax.title.set_color("white")
+            spine.set_color(FG_COLOR)
+        self.ax.tick_params(axis="both", colors=FG_COLOR)
+        self.ax.xaxis.label.set_color(FG_COLOR)
+        self.ax.yaxis.label.set_color(FG_COLOR)
+        self.ax.title.set_color(FG_COLOR)
 
         if self.cbar is not None:
-            self.cbar.outline.set_edgecolor("white")
-            self.cbar.ax.tick_params(colors="white")
+            self.cbar.outline.set_edgecolor(FG_COLOR)
+            self.cbar.ax.tick_params(colors=FG_COLOR)
             for label in self.cbar.ax.get_yticklabels():
-                label.set_color("white")
+                label.set_color(FG_COLOR)
 
     def plot_solution(self, x, y, u):
         x = np.asarray(x, dtype=float)
@@ -77,11 +76,13 @@ class Heat2DCanvas(FigureCanvasQTAgg):
 
 class Heat2DTab(QWidget):
     """
-    C++ heat2d_cpp.solve_heat_2d を呼んで 2D ヒートマップを描画するタブ。
+    Heat2D の C++ 参照ソルバ（heat2d）を経由して 2D ヒートマップを描画するタブ。
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        self.state = Heat2DState()
 
         main_layout = QVBoxLayout(self)
 
@@ -178,24 +179,57 @@ class Heat2DTab(QWidget):
     def append_log(self, text: str):
         self.log_text.append(text)
 
+    def get_config(self) -> dict:
+        """
+        UI から設定値を収集し、Heat2DState と backend 用 config dict の両方に使える
+        標準化された辞書を返す。
+        """
+
+        cfg = {
+            "Nx_cpp": int(self.spin_Nx.value()),
+            "Ny_cpp": int(self.spin_Ny.value()),
+            "Lx": float(self.spin_Lx.value()),
+            "Ly": float(self.spin_Ly.value()),
+            "alpha": float(self.spin_alpha.value()),
+            "dt_cpp": float(self.spin_dt.value()),
+            "T_final": float(self.spin_Tfinal.value()),
+            "ic_type": self.combo_ic_type.currentText(),
+            "gaussian_kx": float(self.spin_gaussian_kx.value()),
+            "gaussian_ky": float(self.spin_gaussian_ky.value()),
+            "tag": self.edit_tag.text().strip() or "heat2d",
+            "solver_type": "heat2d",
+        }
+
+        # ★ ViewModel にも反映させる
+        self.state.config = cfg
+
+        return cfg
+
     @Slot()
     def on_run_clicked(self):
-        self.info_label.setText("Running 2D Heat simulation...")
+        # Config を取得＆ state 更新
+        cfg_dict = self.get_config()
+
+        self.state.is_running = True
+        self.state.last_error = None
+        self.state.info_message = "Running 2D Heat simulation..."
+
+        self.info_label.setText(self.state.info_message)
         self.run_button.setEnabled(False)
         QApplication.processEvents()
 
         cfg = Heat2DConfig(
-            Nx_cpp=int(self.spin_Nx.value()),
-            Ny_cpp=int(self.spin_Ny.value()),
-            Lx=float(self.spin_Lx.value()),
-            Ly=float(self.spin_Ly.value()),
-            alpha=float(self.spin_alpha.value()),
-            dt_cpp=float(self.spin_dt.value()),
-            T_final=float(self.spin_Tfinal.value()),
-            ic_type=self.combo_ic_type.currentText().lower(),
-            gaussian_kx=float(self.spin_gaussian_kx.value()),
-            gaussian_ky=float(self.spin_gaussian_ky.value()),
-            tag=self.edit_tag.text().strip() or "heat2d",
+            Nx_cpp=cfg_dict["Nx_cpp"],
+            Ny_cpp=cfg_dict["Ny_cpp"],
+            Lx=cfg_dict["Lx"],
+            Ly=cfg_dict["Ly"],
+            alpha=cfg_dict["alpha"],
+            dt_cpp=cfg_dict["dt_cpp"],
+            T_final=cfg_dict["T_final"],
+            ic_type=cfg_dict["ic_type"].lower(),
+            gaussian_kx=cfg_dict["gaussian_kx"],
+            gaussian_ky=cfg_dict["gaussian_ky"],
+            tag=cfg_dict["tag"],
         )
 
         self.append_log(f"Config: {cfg}")
@@ -203,14 +237,27 @@ class Heat2DTab(QWidget):
         try:
             result: Heat2DResult = run_heat2d(cfg)
         except Exception as e:
+            # ★ 失敗時
+            self.state.is_running = False
+            self.state.last_error = repr(e)
+            self.state.info_message = "Error during Heat2D simulation."
+
             self.append_log(f"Error: {e!r}")
-            self.info_label.setText("Error during Heat2D simulation.")
+            self.info_label.setText(self.state.info_message)
             self.run_button.setEnabled(True)
             return
 
+        # ★ 成功時：state 更新
+        self.state.is_running = False
+        self.state.last_run_id = result.run_id
+        self.state.info_message = "Done."
+
+        # 描画
         self.canvas.plot_solution(result.x, result.y, result.u)
-        self.run_id_label.setText(f"run_id: {result.run_id}")
-        self.info_label.setText("Done.")
+
+        # ラベル・ログ更新
+        self.run_id_label.setText(f"run_id: {self.state.last_run_id}")
+        self.info_label.setText(self.state.info_message)
 
         if result.config_json_path is not None:
             self.append_log(f"Config JSON: {result.config_json_path}")

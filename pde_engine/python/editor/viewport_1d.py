@@ -1,7 +1,8 @@
 # editor/viewport_1d.py
 from __future__ import annotations
+
 import json
-from typing import Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -13,14 +14,21 @@ from PySide6.QtWidgets import (
 )
 
 from backend import log_utils
-from abc import ABC, abstractmethod
 from editor.animation_engine import AnimationEngine
-from editor.viewmodels import ViewportState 
+from editor.viewmodels import ViewportState
+from editor.viewport_modes import (  # ★ ここを追加
+    SolutionMode,
+    ErrorMode,
+    LossMode,
+    AnimationMode,
+)
 
 LOSS_LINEWIDTH = 0.5
 
-if TYPE_CHECKING:
-    from .viewport_1d import ViewportWidget 
+
+# ==============================
+# Matplotlib キャンバス
+# ==============================
 
 class MatplotlibCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None, width=5, height=3, dpi=100):
@@ -44,58 +52,9 @@ class MatplotlibCanvas(FigureCanvasQTAgg):
 
         ax.title.set_color("white")
 
-
-class ViewMode(ABC):
-    def __init__(self, viewport: "ViewportWidget", name: str):
-        self.viewport = viewport
-        self.name = name
-
-    @abstractmethod
-    def render(self, run_id: str) -> None:
-        """指定 run_id を描画する"""
-        raise NotImplementedError
-
-
-class SolutionMode(ViewMode):
-    def __init__(self, viewport: "ViewportWidget"):
-        super().__init__(viewport, "Solution")
-
-    def render(self, run_id: str) -> None:
-        vp = self.viewport
-        ax = vp.canvas.axes
-        ev = vp._load_eval(run_id)
-        vp._plot_solution(ax, run_id, ev)
-
-
-class ErrorMode(ViewMode):
-    def __init__(self, viewport: "ViewportWidget"):
-        super().__init__(viewport, "Error")
-
-    def render(self, run_id: str) -> None:
-        vp = self.viewport
-        ax = vp.canvas.axes
-        ev = vp._load_eval(run_id)
-        vp._plot_error(ax, run_id, ev)
-
-
-class LossMode(ViewMode):
-    def __init__(self, viewport: "ViewportWidget"):
-        super().__init__(viewport, "Loss")
-
-    def render(self, run_id: str) -> None:
-        vp = self.viewport
-        ax = vp.canvas.axes
-        vp._plot_loss(ax, run_id)
-
-
-class AnimationMode(ViewMode):
-    def __init__(self, viewport: "ViewportWidget"):
-        super().__init__(viewport, "Animation")
-
-    def render(self, run_id: str) -> None:
-        vp = self.viewport
-        ax = vp.canvas.axes
-        vp._plot_animation_or_fallback(ax, run_id)
+# ==============================
+# Viewport 本体
+# ==============================
 
 class ViewportWidget(QWidget):
     """
@@ -110,6 +69,7 @@ class ViewportWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        # ViewModel
         self.state = ViewportState()
 
         layout = QVBoxLayout(self)
@@ -119,9 +79,6 @@ class ViewportWidget(QWidget):
         mode_layout.addWidget(QLabel("View:"))
 
         self.mode_combo = QComboBox()
-        self._init_modes()
-        self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
-
         mode_layout.addWidget(self.mode_combo)
         mode_layout.addStretch()
         layout.addLayout(mode_layout)
@@ -140,14 +97,14 @@ class ViewportWidget(QWidget):
         layout.addWidget(self.time_slider)
 
         # --- 下: 情報ラベル ---
-        self.info_label = QLabel("No run yet")
+        self.info_label = QLabel(self.state.info_message)
         self.info_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.info_label)
 
         # アニメーション専用エンジン
         self.animation = AnimationEngine(self)
 
-        # 表示モードを登録
+        # モード登録（ここで1回だけ）
         self._init_modes()
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
 
@@ -167,22 +124,28 @@ class ViewportWidget(QWidget):
         """
         利用可能な表示モードを登録し、コンボボックスに反映する。
         """
-
-        self._modes: dict[str, ViewMode] = {}
+        # SolutionMode / ErrorMode / LossMode / AnimationMode は
+        # このファイル内で定義済なので import は不要
+        self._modes: dict[str, object] = {}
 
         self.mode_combo.clear()
-        # Viewport 自身を渡してモードを生成
         for cls in (SolutionMode, ErrorMode, LossMode, AnimationMode):
             mode = cls(self)
             self._modes[mode.name] = mode
             self.mode_combo.addItem(mode.name)
 
+        # ViewModel 初期値
         self.state.current_mode = "Solution"
+        idx = self.mode_combo.findText(self.state.current_mode)
+        if idx >= 0:
+            self.mode_combo.setCurrentIndex(idx)
 
     # ========= 外部 API =========
 
     def show_result(self, run_id: str):
+        """ログから run を選んだときなどに呼ばれる入口"""
         self.state.current_run_id = run_id
+        self.state.info_message = f"Result: {run_id} | mode: {self.state.current_mode}"
         self._update_plot()
 
     # ========= スロット =========
@@ -190,7 +153,8 @@ class ViewportWidget(QWidget):
     @Slot()
     def on_mode_changed(self):
         self.state.current_mode = self.mode_combo.currentText()
-        if self.state.current_run_id is not None:
+        run_id = self.state.current_run_id
+        if run_id is not None:
             self._update_plot()
 
     # ========= モード別描画 =========
@@ -199,7 +163,8 @@ class ViewportWidget(QWidget):
         if ev is None:
             ax.text(0.5, 0.5, "No eval.json for this run",
                     ha="center", va="center")
-            self.info_label.setText(f"Result: {run_id} (no eval)")
+            self.state.info_message = f"Result: {run_id} (no eval)"
+            self.info_label.setText(self.state.info_message)
             return
 
         x_pinn = np.asarray(ev.get("x_pinn"), dtype=float)
@@ -215,13 +180,15 @@ class ViewportWidget(QWidget):
         ax.set_ylabel("u(x, T)")
         ax.set_title(f"Solution (run_id={run_id})")
         ax.legend()
-        self.info_label.setText(f"Result: {run_id}  |  mode: Solution")
+        self.state.info_message = f"Result: {run_id}  |  mode: Solution"
+        self.info_label.setText(self.state.info_message)
 
     def _plot_error(self, ax, run_id: str, ev: Optional[dict]):
         if ev is None:
             ax.text(0.5, 0.5, "No eval.json for this run",
                     ha="center", va="center")
-            self.info_label.setText(f"Result: {run_id} (no eval)")
+            self.state.info_message = f"Result: {run_id} (no eval)"
+            self.info_label.setText(self.state.info_message)
             return
 
         x_pinn = np.asarray(ev.get("x_pinn"), dtype=float)
@@ -238,13 +205,15 @@ class ViewportWidget(QWidget):
         ax.set_yscale("log")
         ax.set_title(f"Error profile (run_id={run_id})")
         ax.legend()
-        self.info_label.setText(f"Result: {run_id}  |  mode: Error")
+        self.state.info_message = f"Result: {run_id}  |  mode: Error"
+        self.info_label.setText(self.state.info_message)
 
     def _plot_loss(self, ax, run_id: str):
         rows = log_utils.load_loss_csv(run_id)
         if not rows:
             ax.text(0.5, 0.5, "No CSV loss log", ha="center", va="center")
-            self.info_label.setText(f"Result: {run_id} (no CSV)")
+            self.state.info_message = f"Result: {run_id} (no CSV)"
+            self.info_label.setText(self.state.info_message)
             return
 
         epochs = [int(r["epoch"]) for r in rows]
@@ -284,9 +253,11 @@ class ViewportWidget(QWidget):
             borderaxespad=0.0,
         )
         self.canvas.fig.subplots_adjust(right=0.78)
-        self.info_label.setText(f"Result: {run_id}  |  mode: Loss")
+        self.state.info_message = f"Result: {run_id}  |  mode: Loss"
+        self.info_label.setText(self.state.info_message)
 
     def _plot_animation_or_fallback(self, ax, run_id: str):
+        # AnimationEngine 側に任せる
         self.animation.setup(run_id)
 
     # ========= メイン描画更新 =========
@@ -300,12 +271,13 @@ class ViewportWidget(QWidget):
         run_id = self.state.current_run_id
         if not run_id:
             ax.text(0.5, 0.5, "No run selected", ha="center", va="center")
-            self.info_label.setText("No run yet")
+            self.state.info_message = "No run yet"
+            self.info_label.setText(self.state.info_message)
             self.canvas.apply_dark_style()
             self.canvas.draw()
             return
 
-        # 次元チェック（2D 以上はここでは表示しない）
+        # 次元チェック（2D はここでは扱わない）
         summary = log_utils.load_summary(run_id)
         dim = 1
         if summary is not None:
@@ -322,9 +294,10 @@ class ViewportWidget(QWidget):
                 ha="center",
                 va="center",
             )
-            self.info_label.setText(
+            self.state.info_message = (
                 f"{dim}D run: {run_id} (view in 2D Heat tab)"
             )
+            self.info_label.setText(self.state.info_message)
             self.canvas.apply_dark_style()
             self.canvas.draw()
             return
@@ -337,7 +310,8 @@ class ViewportWidget(QWidget):
         if mode is None:
             ax.text(0.5, 0.5, f"Unknown mode: {mode_name}",
                     ha="center", va="center")
-            self.info_label.setText(f"Unknown mode: {mode_name}")
+            self.state.info_message = f"Unknown mode: {mode_name}"
+            self.info_label.setText(self.state.info_message)
         else:
             mode.render(run_id)
 
@@ -348,4 +322,5 @@ class ViewportWidget(QWidget):
     def on_time_slider_changed(self, value: int):
         if self.mode_combo.currentText() != "Animation":
             return
+        self.state.current_anim_step = value
         self.animation.render_frame(value)

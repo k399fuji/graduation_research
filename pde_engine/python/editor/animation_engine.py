@@ -1,3 +1,4 @@
+# editor/animation_engine.py
 from __future__ import annotations
 
 import json
@@ -7,8 +8,9 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 import numpy as np
 
 from backend import log_utils
+
 if TYPE_CHECKING:
-    from .viewport_1d import ViewportWidget
+    from editor.viewport_1d import ViewportWidget
 
 
 @dataclass
@@ -39,7 +41,7 @@ class AnimationEngine:
 
     # --------- ユーティリティ ---------
 
-    def _draw_message(self, msg: str):
+    def _draw_message(self, msg: str) -> None:
         ax = self.viewport.canvas.axes
         ax.clear()
         ax.text(0.5, 0.5, msg, ha="center", va="center")
@@ -83,7 +85,7 @@ class AnimationEngine:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
 
-        # backend 判定（heat / wave）
+        # backend 判定（heat / wave など）
         summary = log_utils.load_summary(run_id)
         backend = None
         if summary is not None:
@@ -143,10 +145,12 @@ class AnimationEngine:
             self.viewport.info_label.setText(f"Result: {run_id} (no eval)")
             return
 
-        x_pinn = np.asarray(ev.get("x_pinn"), dtype=float)
-        u_pinn = np.asarray(ev.get("u_pinn"), dtype=float)
-        x_cpp = np.asarray(ev.get("x_cpp"), dtype=float)
-        u_cpp = np.asarray(ev.get("u_cpp"), dtype=float)
+        # まず1D PINN形式で取得
+        x_pinn = ev.get("x_pinn") or ev.get("x")
+        u_pinn = ev.get("u_pinn") or ev.get("u")
+        x_cpp  = ev.get("x_cpp") or ev.get("x")
+        u_cpp  = ev.get("u_cpp") or ev.get("u")
+
 
         ax.plot(x_pinn, u_pinn, label="PINN (T_final)", linewidth=2)
         if len(x_cpp) == len(u_cpp):
@@ -176,7 +180,8 @@ class AnimationEngine:
 
         if not run_id:
             self._draw_message("No run selected")
-            self.viewport.info_label.setText("No run yet")
+            self.viewport.state.info_message = "No run yet"
+            self.viewport.info_label.setText(self.viewport.state.info_message)
             return
 
         state = self.state
@@ -205,10 +210,13 @@ class AnimationEngine:
             ax.set_title(f"Animation (run_id={run_id}, t={t:.3f})")
             ax.legend()
 
-            self.viewport.state.anim_step = int(step_clamped)
-            self.viewport.info_label.setText(
+            # ★ ViewModel 更新
+            self.viewport.state.current_anim_step = int(step_clamped)
+            self.viewport.state.info_message = (
                 f"Animation: {run_id} | step {step_clamped}/{N_frames}  t={t:.3f}"
             )
+            self.viewport.info_label.setText(self.viewport.state.info_message)
+
             self.viewport.canvas.apply_dark_style()
             self.viewport.canvas.draw()
             return
