@@ -22,6 +22,7 @@ from editor.home_page import HomePage
 
 import editor.pinn_panels #プラグイン登録用：参照されてないけど消したらダメ
 import editor.logs_panel 
+import editor.heat2d_logs_panel
 
 
 def apply_dark_theme(app: QApplication) -> None:

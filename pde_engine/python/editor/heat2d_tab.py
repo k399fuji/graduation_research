@@ -4,34 +4,27 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-
-from PySide6.QtCore import Slot, Signal, Qt
+from PySide6.QtCore import Slot, Qt
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QFormLayout,
-    QHBoxLayout,
-    QLabel,
-    QDoubleSpinBox,
-    QSpinBox,
-    QComboBox,
-    QLineEdit,
-    QPushButton,
-    QTextEdit,
-    QApplication,
-    QSplitter,
+    QWidget, QVBoxLayout, QFormLayout, QHBoxLayout,
+    QLabel, QDoubleSpinBox, QSpinBox, QComboBox,
+    QLineEdit, QPushButton, QTextEdit, QApplication,
+    QSplitter, QToolButton,
 )
 
 from backend.heat2d_backend import Heat2DConfig, Heat2DResult, run_heat2d
 from editor.viewmodels import Heat2DState
 
+try:
+    import heat2d_cpp  # noqa: F401
+except ImportError:
+    heat2d_cpp = None
+
 DARK_BG = "#2b2b2b"
 FG_COLOR = "white"
 
 
-# ============================================
-# 2D 描画用キャンバス
-# ============================================
+# editor/heat2d_tab.py の先頭付近はそのまま
 
 class Heat2DCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None, width=5, height=4, dpi=100):
@@ -61,6 +54,14 @@ class Heat2DCanvas(FigureCanvasQTAgg):
             for label in self.cbar.ax.get_yticklabels():
                 label.set_color(FG_COLOR)
 
+    def clear_canvas(self):
+        """ヒートマップを描き直す前に Figure 全体を安全に初期化する。"""
+        self.fig.clear()
+        self.ax = self.fig.add_subplot(111)
+        self.im = None
+        self.cbar = None
+        self.apply_dark_style()
+
     def plot_solution(self, x, y, u):
         x = np.asarray(x, dtype=float)
         y = np.asarray(y, dtype=float)
@@ -68,8 +69,9 @@ class Heat2DCanvas(FigureCanvasQTAgg):
         if u.ndim == 1:
             u = u.reshape(len(y), len(x))
 
-        self.ax.clear()
-        self.apply_dark_style()
+        # ★ 以前の self.ax.clear() / self.cbar.remove() の代わりに
+        #   Figure ごと綺麗に作り直す
+        self.clear_canvas()
 
         extent = [x.min(), x.max(), y.min(), y.max()]
         self.im = self.ax.imshow(
@@ -82,62 +84,61 @@ class Heat2DCanvas(FigureCanvasQTAgg):
         self.ax.set_ylabel("y")
         self.ax.set_title("Heat2D: u(x, y, T_final)")
 
-        if self.cbar is not None:
-            self.cbar.remove()
-            self.cbar = None
         self.cbar = self.fig.colorbar(self.im, ax=self.ax)
         self.apply_dark_style()
         self.draw_idle()
 
 
-# ============================================
-# Viewer（右側：可視化専用）
-# ============================================
-
-class Heat2DViewer(QWidget):
+class Heat2DTab(QWidget):
     """
-    Heat2D の結果を表示する Viewer。
+    2D Heat 方程式の数値シミュレーションタブ。
+    左：パラメータ＋ログ / 右：ヒートマップ（QSplitter）
+    上部のボタンで左右どちらも折りたたみ可能。
     """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        layout = QVBoxLayout(self)
-        self.canvas = Heat2DCanvas(self, width=5, height=4, dpi=100)
-        layout.addWidget(self.canvas, 1)
-
-        self.info_label = QLabel("Heat2D Viewer: no result yet")
-        self.info_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.info_label)
-
-    def show_result(self, result: Heat2DResult) -> None:
-        """
-        Heat2DResult を受け取ってヒートマップを描画。
-        """
-        self.canvas.plot_solution(result.x, result.y, result.u)
-        self.info_label.setText(f"Heat2D Viewer | run_id={result.run_id}")
-
-
-# ============================================
-# Control Panel（左側：パラメータ＋Run＋ログ）
-# ============================================
-
-class Heat2DControlPanel(QWidget):
-    """
-    Heat2D シミュレーションのパラメータ入力・実行とログ表示を担当するパネル。
-    """
-
-    simulationFinished = Signal(object)  # Heat2DResult を流す
-    simulationFailed = Signal(str)       # エラーメッセージなどを流す（必要なら使用）
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         self.state = Heat2DState()
 
-        main_layout = QVBoxLayout(self)
+        # 折りたたみ前のサイズ記憶用
+        self._last_left_size = 350
+        self._last_right_size = 850
 
-        # ---- フォーム ----
+        # ===== ルートレイアウト =====
+        root_layout = QVBoxLayout(self)
+
+        # ---- 上部ツールバー（常に見えるトグルボタン）----
+        toolbar_layout = QHBoxLayout()
+        title_label = QLabel("Heat2D Simulation")
+        toolbar_layout.addWidget(title_label)
+        toolbar_layout.addStretch()
+
+        self.btn_toggle_left = QToolButton()
+        self.btn_toggle_left.setText("Hide Params/Log")
+        self.btn_toggle_left.setCheckable(True)
+        self.btn_toggle_left.toggled.connect(self.on_toggle_left_panel)
+        toolbar_layout.addWidget(self.btn_toggle_left)
+
+        self.btn_toggle_right = QToolButton()
+        self.btn_toggle_right.setText("Hide Heatmap")
+        self.btn_toggle_right.setCheckable(True)
+        self.btn_toggle_right.toggled.connect(self.on_toggle_right_panel)
+        toolbar_layout.addWidget(self.btn_toggle_right)
+
+        root_layout.addLayout(toolbar_layout)
+
+        # ---- Splitter（左：パネル / 右：キャンバス）----
+        self.splitter = QSplitter(Qt.Horizontal, self)
+        root_layout.addWidget(self.splitter)
+
+        # ===== 左パネル（パラメータ＋ログ） =====
+        self.left_panel = QWidget(self)
+        left_layout = QVBoxLayout(self.left_panel)
+
+        left_layout.addWidget(QLabel("Heat2D Parameters / Log"))
+
+        # パラメータフォーム
         form_layout = QFormLayout()
 
         self.spin_Lx = QDoubleSpinBox()
@@ -204,9 +205,9 @@ class Heat2DControlPanel(QWidget):
         form_layout.addRow("Gaussian ky", self.spin_gaussian_ky)
         form_layout.addRow("tag", self.edit_tag)
 
-        main_layout.addLayout(form_layout)
+        left_layout.addLayout(form_layout)
 
-        # ---- ボタン行 ----
+        # 実行ボタン行
         button_layout = QHBoxLayout()
         self.run_button = QPushButton("Run 2D Heat Simulation")
         self.run_button.clicked.connect(self.on_run_clicked)
@@ -215,26 +216,36 @@ class Heat2DControlPanel(QWidget):
         self.run_id_label = QLabel("run_id: (not run yet)")
         button_layout.addWidget(self.run_id_label)
 
-        self.info_label = QLabel(self.state.info_message)
+        self.info_label = QLabel("Ready.")
         button_layout.addWidget(self.info_label)
 
         button_layout.addStretch()
-        main_layout.addLayout(button_layout)
+        left_layout.addLayout(button_layout)
 
-        # ---- ログエリア ----
+        # ログエリア
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        main_layout.addWidget(QLabel("Log:"))
-        main_layout.addWidget(self.log_text)
+        left_layout.addWidget(QLabel("Log:"))
+        left_layout.addWidget(self.log_text)
 
-    # ---------- ユーティリティ ----------
+        self.splitter.addWidget(self.left_panel)
 
-    def append_log(self, text: str) -> None:
+        # ===== 右パネル（キャンバス） =====
+        self.canvas = Heat2DCanvas(self, width=5, height=4, dpi=100)
+        self.splitter.addWidget(self.canvas)
+
+        # 初期の幅配分（左:右 = 1:2 くらい）
+        self.splitter.setSizes([self._last_left_size, self._last_right_size])
+
+    # ---------------- ユーティリティ ----------------
+
+    def append_log(self, text: str):
         self.log_text.append(text)
 
-    def _collect_config_dict(self) -> dict:
+    def get_config(self) -> dict:
         """
-        UI から設定値を収集し、backend にそのまま渡せる dict を返す。
+        UI から設定値を収集し、Heat2DState と backend 用 config dict の両方に使える
+        標準化された辞書を返す。
         """
         cfg = {
             "Nx_cpp": int(self.spin_Nx.value()),
@@ -250,19 +261,77 @@ class Heat2DControlPanel(QWidget):
             "tag": self.edit_tag.text().strip() or "heat2d",
             "solver_type": "heat2d",
         }
+
+        # ViewModel にも反映（型の都合で ignore）
+        setattr(self.state, "config", cfg)
+
         return cfg
 
-    # ---------- Run ボタン ----------
+    # ---------------- 折りたたみ系スロット ----------------
+
+    @Slot(bool)
+    def on_toggle_left_panel(self, checked: bool):
+        sizes = self.splitter.sizes()
+        total = sum(sizes) or (self._last_left_size + self._last_right_size)
+
+        if checked:
+            # 折りたたむ前のサイズを保存
+            if sizes[0] > 0:
+                self._last_left_size = sizes[0]
+            # 左を 0、右を全てに
+            self.left_panel.hide()
+            self.splitter.setSizes([0, total])
+            self.btn_toggle_left.setText("Show Params/Log")
+
+            # 両方 0 にならないように保険
+            if self.btn_toggle_right.isChecked() and total == 0:
+                self.btn_toggle_right.setChecked(False)
+        else:
+            # 復元
+            self.left_panel.show()
+            left = self._last_left_size or int(total * 0.3)
+            right = total - left
+            if right <= 0:
+                right = int(total * 0.7)
+            self.splitter.setSizes([left, right])
+            self.btn_toggle_left.setText("Hide Params/Log")
+
+    @Slot(bool)
+    def on_toggle_right_panel(self, checked: bool):
+        sizes = self.splitter.sizes()
+        total = sum(sizes) or (self._last_left_size + self._last_right_size)
+
+        if checked:
+            if sizes[1] > 0:
+                self._last_right_size = sizes[1]
+            # 右を 0、左を全てに
+            self.canvas.hide()
+            self.splitter.setSizes([total, 0])
+            self.btn_toggle_right.setText("Show Heatmap")
+
+            # 両方 0 にならないように保険
+            if self.btn_toggle_left.isChecked() and total == 0:
+                self.btn_toggle_left.setChecked(False)
+        else:
+            self.canvas.show()
+            right = self._last_right_size or int(total * 0.7)
+            left = total - right
+            if left <= 0:
+                left = int(total * 0.3)
+            self.splitter.setSizes([left, right])
+            self.btn_toggle_right.setText("Hide Heatmap")
+
+    # ---------------- 実行ボタン ----------------
 
     @Slot()
-    def on_run_clicked(self) -> None:
-        # Config を取得
-        cfg_dict = self._collect_config_dict()
+    def on_run_clicked(self):
+        # Config を取得＆ state 更新
+        cfg_dict = self.get_config()
 
-        # 状態リセット
         self.state.is_running = True
         self.state.last_error = None
         self.state.info_message = "Running 2D Heat simulation..."
+
         self.info_label.setText(self.state.info_message)
         self.run_button.setEnabled(False)
         QApplication.processEvents()
@@ -294,17 +363,18 @@ class Heat2DControlPanel(QWidget):
             self.append_log(f"Error: {e!r}")
             self.info_label.setText(self.state.info_message)
             self.run_button.setEnabled(True)
-
-            # 必要なら外部にも通知
-            self.simulationFailed.emit(repr(e))
             return
 
-        # 成功時
+        # 成功時：state 更新
         self.state.is_running = False
         self.state.last_run_id = result.run_id
         self.state.info_message = "Done."
 
-        self.run_id_label.setText(f"run_id: {result.run_id}")
+        # 描画
+        self.canvas.plot_solution(result.x, result.y, result.u)
+
+        # ラベル・ログ更新
+        self.run_id_label.setText(f"run_id: {self.state.last_run_id}")
         self.info_label.setText(self.state.info_message)
 
         if result.config_json_path is not None:
@@ -315,48 +385,3 @@ class Heat2DControlPanel(QWidget):
             self.append_log(f"Summary JSON: {result.summary_json_path}")
 
         self.run_button.setEnabled(True)
-
-        # Viewer 側へ結果を通知
-        self.simulationFinished.emit(result)
-
-
-# ============================================
-# Workspace タブ本体（左右分割）
-# ============================================
-
-class Heat2DTab(QWidget):
-    """
-    Heat2D 用ワークスペース。
-    左に ControlPanel、右に Viewer を QSplitter で配置する。
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        main_layout = QVBoxLayout(self)
-
-        splitter = QSplitter(Qt.Horizontal, self)
-
-        self.control_panel = Heat2DControlPanel(splitter)
-        self.viewer = Heat2DViewer(splitter)
-
-        splitter.addWidget(self.control_panel)
-        splitter.addWidget(self.viewer)
-
-        # 左パネルはやや狭く、右 Viewer を広く取る
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-
-        main_layout.addWidget(splitter)
-
-        # シミュレーション完了時に Viewer に渡す
-        self.control_panel.simulationFinished.connect(self.on_simulation_finished)
-
-    @Slot(object)
-    def on_simulation_finished(self, result_obj: object) -> None:
-        # Signal は object なので Heat2DResult にキャストして使う
-        if isinstance(result_obj, Heat2DResult):
-            self.viewer.show_result(result_obj)
-        else:
-            # 想定外の型の場合は何もしない（もしくはログに出してもOK）
-            pass

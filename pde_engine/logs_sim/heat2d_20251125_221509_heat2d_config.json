@@ -1,0 +1,18 @@
+{
+  "Nx_cpp": 101,
+  "Ny_cpp": 101,
+  "Lx": 1.0,
+  "Ly": 1.0,
+  "alpha": 0.25,
+  "T_final": 0.4,
+  "dt_cpp": 0.0001,
+  "ic_type": "gaussian",
+  "gaussian_kx": 100.0,
+  "gaussian_ky": 100.0,
+  "tag": "heat2d",
+  "solver_type": "heat2d",
+  "save_anim": true,
+  "n_frames": 50,
+  "steps_cpp": 4000,
+  "run_id": "heat2d_20251125_221509_heat2d"
+}
